@@ -18,18 +18,28 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final CaminhadaStorage _storage = CaminhadaStorage();
   final FotoService _fotoService = FotoService();
+
   GoogleMapController? mapaController;
   Position? posicaoAtual;
   StreamSubscription<Position>? posicaoSubscription;
   Timer? cronometro;
   DateTime? inicio;
+
   int segundos = 0;
   double distanciaKm = 0;
+
   final List<LatLng> pontos = [];
   final List<String> fotos = [];
+
   List<Caminhada> historico = [];
+
   bool caminhando = false;
   bool carregando = true;
+
+  static const LatLng posicaoPadrao = LatLng(
+    -23.5505,
+    -46.6333,
+  );
 
   @override
   void initState() {
@@ -46,16 +56,20 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> carregarDados() async {
     historico = await _storage.carregar();
-    await inicializarGps();
+
+    if (!mounted) return;
+
+    setState(() {
+      carregando = false;
+    });
+
+    inicializarGps();
   }
 
   Future<void> inicializarGps() async {
     final habilitado = await Geolocator.isLocationServiceEnabled();
 
-    if (!habilitado) {
-      setState(() => carregando = false);
-      return;
-    }
+    if (!habilitado) return;
 
     var permissao = await Geolocator.checkPermission();
 
@@ -65,16 +79,27 @@ class _HomePageState extends State<HomePage> {
 
     if (permissao == LocationPermission.denied ||
         permissao == LocationPermission.deniedForever) {
-      setState(() => carregando = false);
       return;
     }
 
-    final posicao = await Geolocator.getCurrentPosition();
+    try {
+      final posicao = await Geolocator.getCurrentPosition();
 
-    setState(() {
-      posicaoAtual = posicao;
-      carregando = false;
-    });
+      if (!mounted) return;
+
+      setState(() {
+        posicaoAtual = posicao;
+      });
+
+      mapaController?.animateCamera(
+        CameraUpdate.newLatLng(
+          LatLng(
+            posicao.latitude,
+            posicao.longitude,
+          ),
+        ),
+      );
+    } catch (_) {}
   }
 
   Future<void> iniciarCaminhada() async {
@@ -102,11 +127,16 @@ class _HomePageState extends State<HomePage> {
       pontos.add(pontoInicial);
     });
 
-    cronometro = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) {
-        setState(() => segundos++);
-      }
-    });
+    cronometro = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) {
+        if (mounted && caminhando) {
+          setState(() {
+            segundos++;
+          });
+        }
+      },
+    );
 
     posicaoSubscription = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
@@ -114,34 +144,41 @@ class _HomePageState extends State<HomePage> {
         distanceFilter: 5,
       ),
     ).listen((posicao) {
-      if (!caminhando) return;
+      if (!caminhando || !mounted) return;
 
-      final novoPonto = LatLng(posicao.latitude, posicao.longitude);
+      final novoPonto = LatLng(
+        posicao.latitude,
+        posicao.longitude,
+      );
 
-      if (pontos.isNotEmpty) {
-        final anterior = pontos.last;
-        final metros = Geolocator.distanceBetween(
-          anterior.latitude,
-          anterior.longitude,
-          novoPonto.latitude,
-          novoPonto.longitude,
-        );
-
-        if (metros > 1) {
-          setState(() {
-            distanciaKm += metros / 1000;
-            pontos.add(novoPonto);
-            posicaoAtual = posicao;
-          });
-        }
-      } else {
+      if (pontos.isEmpty) {
         setState(() {
           pontos.add(novoPonto);
           posicaoAtual = posicao;
         });
+        return;
       }
 
-      mapaController?.animateCamera(CameraUpdate.newLatLng(novoPonto));
+      final anterior = pontos.last;
+
+      final metros = Geolocator.distanceBetween(
+        anterior.latitude,
+        anterior.longitude,
+        novoPonto.latitude,
+        novoPonto.longitude,
+      );
+
+      if (metros <= 1) return;
+
+      setState(() {
+        distanciaKm += metros / 1000;
+        pontos.add(novoPonto);
+        posicaoAtual = posicao;
+      });
+
+      mapaController?.animateCamera(
+        CameraUpdate.newLatLng(novoPonto),
+      );
     });
   }
 
@@ -150,16 +187,21 @@ class _HomePageState extends State<HomePage> {
 
     final caminho = await _fotoService.tirarFoto();
 
-    if (caminho == null) return;
+    if (caminho == null || !mounted) return;
 
-    setState(() => fotos.add(caminho));
+    setState(() {
+      fotos.add(caminho);
+    });
   }
 
   Future<void> finalizarCaminhada() async {
     if (!caminhando || inicio == null) return;
 
     await posicaoSubscription?.cancel();
+    posicaoSubscription = null;
+
     cronometro?.cancel();
+    cronometro = null;
 
     final caminhada = Caminhada(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -172,17 +214,20 @@ class _HomePageState extends State<HomePage> {
     );
 
     historico.insert(0, caminhada);
+
     await _storage.salvar(historico);
+
+    if (!mounted) return;
 
     setState(() {
       caminhando = false;
       inicio = null;
     });
 
-    if (!mounted) return;
-
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Caminhada salva no histórico.')),
+      const SnackBar(
+        content: Text('Caminhada salva no histórico.'),
+      ),
     );
   }
 
@@ -222,7 +267,9 @@ class _HomePageState extends State<HomePage> {
         Marker(
           markerId: const MarkerId('inicio'),
           position: pontos.first,
-          infoWindow: const InfoWindow(title: 'Início'),
+          infoWindow: const InfoWindow(
+            title: 'Início',
+          ),
         ),
       );
     }
@@ -232,7 +279,9 @@ class _HomePageState extends State<HomePage> {
         Marker(
           markerId: const MarkerId('atual'),
           position: pontos.last,
-          infoWindow: const InfoWindow(title: 'Posição atual'),
+          infoWindow: const InfoWindow(
+            title: 'Posição atual',
+          ),
         ),
       );
     }
@@ -243,8 +292,11 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final pontoInicial = posicaoAtual == null
-        ? const LatLng(-23.5505, -46.6333)
-        : LatLng(posicaoAtual!.latitude, posicaoAtual!.longitude);
+        ? posicaoPadrao
+        : LatLng(
+            posicaoAtual!.latitude,
+            posicaoAtual!.longitude,
+          );
 
     return Scaffold(
       appBar: AppBar(
@@ -267,7 +319,9 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
       body: carregando
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(
+              child: CircularProgressIndicator(),
+            )
           : Column(
               children: [
                 Expanded(
@@ -283,19 +337,37 @@ class _HomePageState extends State<HomePage> {
                     polylines: linhas,
                     onMapCreated: (controller) {
                       mapaController = controller;
+
+                      if (posicaoAtual != null) {
+                        controller.animateCamera(
+                          CameraUpdate.newLatLng(
+                            LatLng(
+                              posicaoAtual!.latitude,
+                              posicaoAtual!.longitude,
+                            ),
+                          ),
+                        );
+                      }
                     },
                   ),
                 ),
                 Container(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  padding: const EdgeInsets.fromLTRB(
+                    16,
+                    12,
+                    16,
+                    16,
+                  ),
                   child: Column(
                     children: [
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        mainAxisAlignment:
+                            MainAxisAlignment.spaceAround,
                         children: [
                           InfoCaminhada(
                             titulo: 'Distância',
-                            valor: '${distanciaKm.toStringAsFixed(2)} km',
+                            valor:
+                                '${distanciaKm.toStringAsFixed(2)} km',
                           ),
                           InfoCaminhada(
                             titulo: 'Tempo',
@@ -316,7 +388,9 @@ class _HomePageState extends State<HomePage> {
                                   ? finalizarCaminhada
                                   : iniciarCaminhada,
                               icon: Icon(
-                                caminhando ? Icons.stop : Icons.play_arrow,
+                                caminhando
+                                    ? Icons.stop
+                                    : Icons.play_arrow,
                               ),
                               label: Text(
                                 caminhando
@@ -329,7 +403,9 @@ class _HomePageState extends State<HomePage> {
                             const SizedBox(width: 10),
                             IconButton.filled(
                               onPressed: tirarFoto,
-                              icon: const Icon(Icons.camera_alt),
+                              icon: const Icon(
+                                Icons.camera_alt,
+                              ),
                               tooltip: 'Tirar foto',
                             ),
                           ],
