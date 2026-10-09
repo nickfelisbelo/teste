@@ -1,15 +1,20 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
-import 'package:google_maps_flutter/google_maps_flutter.dart';
 import '../models/caminhada.dart';
 import '../services/caminhada_storage.dart';
-import '../services/foto_service.dart';
-import 'historico_page.dart';
+import 'detalhes_caminhada_page.dart';
+import 'nova_caminhada_page.dart';
+import 'splash_page.dart';
 import 'widgets.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final bool modoEscuro;
+  final ValueChanged<bool> onTemaChanged;
+
+  const HomePage({
+    super.key,
+    required this.modoEscuro,
+    required this.onTemaChanged,
+  });
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -17,405 +22,249 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final CaminhadaStorage _storage = CaminhadaStorage();
-  final FotoService _fotoService = FotoService();
 
-  GoogleMapController? mapaController;
-  Position? posicaoAtual;
-  StreamSubscription<Position>? posicaoSubscription;
-  Timer? cronometro;
-  DateTime? inicio;
-
-  int segundos = 0;
-  double distanciaKm = 0;
-
-  final List<LatLng> pontos = [];
-  final List<String> fotos = [];
-
-  List<Caminhada> historico = [];
-
-  bool caminhando = false;
+  List<Caminhada> caminhadas = [];
   bool carregando = true;
-
-  static const LatLng posicaoPadrao = LatLng(
-    -23.5505,
-    -46.6333,
-  );
 
   @override
   void initState() {
     super.initState();
-    carregarDados();
+    carregarCaminhadas();
   }
 
-  @override
-  void dispose() {
-    posicaoSubscription?.cancel();
-    cronometro?.cancel();
-    super.dispose();
-  }
-
-  Future<void> carregarDados() async {
-    historico = await _storage.carregar();
+  Future<void> carregarCaminhadas() async {
+    final dados = await _storage.carregar();
 
     if (!mounted) return;
 
     setState(() {
+      caminhadas = dados;
       carregando = false;
     });
-
-    inicializarGps();
   }
 
-  Future<void> inicializarGps() async {
-    final habilitado = await Geolocator.isLocationServiceEnabled();
-
-    if (!habilitado) return;
-
-    var permissao = await Geolocator.checkPermission();
-
-    if (permissao == LocationPermission.denied) {
-      permissao = await Geolocator.requestPermission();
-    }
-
-    if (permissao == LocationPermission.denied ||
-        permissao == LocationPermission.deniedForever) {
-      return;
-    }
-
-    try {
-      final posicao = await Geolocator.getCurrentPosition();
-
-      if (!mounted) return;
-
-      setState(() {
-        posicaoAtual = posicao;
-      });
-
-      mapaController?.animateCamera(
-        CameraUpdate.newLatLng(
-          LatLng(
-            posicao.latitude,
-            posicao.longitude,
-          ),
-        ),
-      );
-    } catch (_) {}
-  }
-
-  Future<void> iniciarCaminhada() async {
-    if (posicaoAtual == null) {
-      await inicializarGps();
-    }
-
-    if (posicaoAtual == null) return;
-
-    posicaoSubscription?.cancel();
-    cronometro?.cancel();
-
-    final pontoInicial = LatLng(
-      posicaoAtual!.latitude,
-      posicaoAtual!.longitude,
-    );
-
-    setState(() {
-      caminhando = true;
-      inicio = DateTime.now();
-      segundos = 0;
-      distanciaKm = 0;
-      pontos.clear();
-      fotos.clear();
-      pontos.add(pontoInicial);
-    });
-
-    cronometro = Timer.periodic(
-      const Duration(seconds: 1),
-      (_) {
-        if (mounted && caminhando) {
-          setState(() {
-            segundos++;
-          });
-        }
-      },
-    );
-
-    posicaoSubscription = Geolocator.getPositionStream(
-      locationSettings: const LocationSettings(
-        accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
+  Future<void> abrirNovaCaminhada() async {
+    final caminhada = await Navigator.push<Caminhada>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const NovaCaminhadaPage(),
       ),
-    ).listen((posicao) {
-      if (!caminhando || !mounted) return;
-
-      final novoPonto = LatLng(
-        posicao.latitude,
-        posicao.longitude,
-      );
-
-      if (pontos.isEmpty) {
-        setState(() {
-          pontos.add(novoPonto);
-          posicaoAtual = posicao;
-        });
-        return;
-      }
-
-      final anterior = pontos.last;
-
-      final metros = Geolocator.distanceBetween(
-        anterior.latitude,
-        anterior.longitude,
-        novoPonto.latitude,
-        novoPonto.longitude,
-      );
-
-      if (metros <= 1) return;
-
-      setState(() {
-        distanciaKm += metros / 1000;
-        pontos.add(novoPonto);
-        posicaoAtual = posicao;
-      });
-
-      mapaController?.animateCamera(
-        CameraUpdate.newLatLng(novoPonto),
-      );
-    });
-  }
-
-  Future<void> tirarFoto() async {
-    if (!caminhando) return;
-
-    final caminho = await _fotoService.tirarFoto();
-
-    if (caminho == null || !mounted) return;
-
-    setState(() {
-      fotos.add(caminho);
-    });
-  }
-
-  Future<void> finalizarCaminhada() async {
-    if (!caminhando || inicio == null) return;
-
-    await posicaoSubscription?.cancel();
-    posicaoSubscription = null;
-
-    cronometro?.cancel();
-    cronometro = null;
-
-    final caminhada = Caminhada(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      inicio: inicio!,
-      fim: DateTime.now(),
-      distanciaKm: distanciaKm,
-      duracaoSegundos: segundos,
-      pontos: List.from(pontos),
-      fotos: List.from(fotos),
     );
 
-    historico.insert(0, caminhada);
+    if (caminhada == null) return;
 
-    await _storage.salvar(historico);
+    caminhadas.insert(0, caminhada);
+    await _storage.salvar(caminhadas);
 
     if (!mounted) return;
 
-    setState(() {
-      caminhando = false;
-      inicio = null;
-    });
+    setState(() {});
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text('Caminhada salva no histórico.'),
+        content: Text('Caminhada salva com sucesso.'),
       ),
     );
   }
 
-  String formatarDuracao(int totalSegundos) {
-    final horas = totalSegundos ~/ 3600;
-    final minutos = (totalSegundos % 3600) ~/ 60;
-    final segundosRestantes = totalSegundos % 60;
+  Future<void> abrirDetalhes(Caminhada caminhada) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DetalhesCaminhadaPage(
+          caminhada: caminhada,
+          onAtualizar: (atualizada) async {
+            final index = caminhadas.indexWhere(
+              (item) => item.id == atualizada.id,
+            );
 
-    if (horas > 0) {
-      return '${horas.toString().padLeft(2, '0')}:'
-          '${minutos.toString().padLeft(2, '0')}:'
-          '${segundosRestantes.toString().padLeft(2, '0')}';
-    }
+            if (index == -1) return;
 
-    return '${minutos.toString().padLeft(2, '0')}:'
-        '${segundosRestantes.toString().padLeft(2, '0')}';
-  }
+            caminhadas[index] = atualizada;
+            await _storage.salvar(caminhadas);
 
-  Set<Polyline> get linhas {
-    if (pontos.length < 2) return {};
-
-    return {
-      Polyline(
-        polylineId: const PolylineId('trajeto'),
-        points: pontos,
-        width: 6,
-        color: Colors.green,
+            if (mounted) {
+              setState(() {});
+            }
+          },
+        ),
       ),
-    };
+    );
   }
 
-  Set<Marker> get marcadores {
-    final resultado = <Marker>{};
-
-    if (pontos.isNotEmpty) {
-      resultado.add(
-        Marker(
-          markerId: const MarkerId('inicio'),
-          position: pontos.first,
-          infoWindow: const InfoWindow(
-            title: 'Início',
-          ),
+  void abrirSplash() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SplashPage(
+          modoEscuro: widget.modoEscuro,
+          onTemaChanged: widget.onTemaChanged,
         ),
-      );
-    }
+      ),
+    );
+  }
 
-    if (pontos.length > 1) {
-      resultado.add(
-        Marker(
-          markerId: const MarkerId('atual'),
-          position: pontos.last,
-          infoWindow: const InfoWindow(
-            title: 'Posição atual',
+  Future<void> excluirCaminhada(Caminhada caminhada) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Excluir caminhada'),
+          content: Text(
+            'Deseja excluir "${caminhada.titulo}"?',
           ),
-        ),
-      );
-    }
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Excluir'),
+            ),
+          ],
+        );
+      },
+    );
 
-    return resultado;
+    if (confirmar != true) return;
+
+    caminhadas.removeWhere((item) => item.id == caminhada.id);
+    await _storage.salvar(caminhadas);
+
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final pontoInicial = posicaoAtual == null
-        ? posicaoPadrao
-        : LatLng(
-            posicaoAtual!.latitude,
-            posicaoAtual!.longitude,
-          );
-
     return Scaffold(
+      drawer: Drawer(
+        child: SafeArea(
+          child: Column(
+            children: [
+              DrawerHeader(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.directions_walk,
+                      size: 52,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Minhas Caminhadas',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.flash_on),
+                title: const Text('Splash'),
+                onTap: () {
+                  Navigator.pop(context);
+                  abrirSplash();
+                },
+              ),
+              SwitchListTile(
+                secondary: Icon(
+                  widget.modoEscuro
+                      ? Icons.dark_mode
+                      : Icons.light_mode,
+                ),
+                title: const Text('Tema escuro'),
+                value: widget.modoEscuro,
+                onChanged: (valor) {
+                  widget.onTemaChanged(valor);
+                  Navigator.pop(context);
+                },
+              ),
+              const Spacer(),
+              ListTile(
+                leading: const Icon(Icons.logout),
+                title: const Text('Sair'),
+                onTap: () {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Você saiu da tela principal.'),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
       appBar: AppBar(
         title: const Text('Minhas Caminhadas'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => HistoricoPage(
-                    historico: historico,
-                    formatarDuracao: formatarDuracao,
-                  ),
-                ),
-              );
-            },
-          ),
-        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: abrirNovaCaminhada,
+        child: const Icon(Icons.add),
       ),
       body: carregando
           ? const Center(
               child: CircularProgressIndicator(),
             )
-          : Column(
-              children: [
-                Expanded(
-                  child: GoogleMap(
-                    initialCameraPosition: CameraPosition(
-                      target: pontoInicial,
-                      zoom: 16,
-                    ),
-                    myLocationEnabled: true,
-                    myLocationButtonEnabled: true,
-                    zoomControlsEnabled: false,
-                    markers: marcadores,
-                    polylines: linhas,
-                    onMapCreated: (controller) {
-                      mapaController = controller;
+          : caminhadas.isEmpty
+              ? _vazio()
+              : RefreshIndicator(
+                  onRefresh: carregarCaminhadas,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: caminhadas.length,
+                    separatorBuilder: (_, __) =>
+                        const SizedBox(height: 12),
+                    itemBuilder: (context, index) {
+                      final caminhada = caminhadas[index];
 
-                      if (posicaoAtual != null) {
-                        controller.animateCamera(
-                          CameraUpdate.newLatLng(
-                            LatLng(
-                              posicaoAtual!.latitude,
-                              posicaoAtual!.longitude,
-                            ),
-                          ),
-                        );
-                      }
+                      return CaminhadaCard(
+                        caminhada: caminhada,
+                        onTap: () => abrirDetalhes(caminhada),
+                        onExcluir: () => excluirCaminhada(caminhada),
+                      );
                     },
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.fromLTRB(
-                    16,
-                    12,
-                    16,
-                    16,
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment:
-                            MainAxisAlignment.spaceAround,
-                        children: [
-                          InfoCaminhada(
-                            titulo: 'Distância',
-                            valor:
-                                '${distanciaKm.toStringAsFixed(2)} km',
-                          ),
-                          InfoCaminhada(
-                            titulo: 'Tempo',
-                            valor: formatarDuracao(segundos),
-                          ),
-                          InfoCaminhada(
-                            titulo: 'Fotos',
-                            valor: fotos.length.toString(),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: FilledButton.icon(
-                              onPressed: caminhando
-                                  ? finalizarCaminhada
-                                  : iniciarCaminhada,
-                              icon: Icon(
-                                caminhando
-                                    ? Icons.stop
-                                    : Icons.play_arrow,
-                              ),
-                              label: Text(
-                                caminhando
-                                    ? 'Finalizar caminhada'
-                                    : 'Iniciar caminhada',
-                              ),
-                            ),
-                          ),
-                          if (caminhando) ...[
-                            const SizedBox(width: 10),
-                            IconButton.filled(
-                              onPressed: tirarFoto,
-                              icon: const Icon(
-                                Icons.camera_alt,
-                              ),
-                              tooltip: 'Tirar foto',
-                            ),
-                          ],
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
+    );
+  }
+
+  Widget _vazio() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.directions_walk,
+              size: 80,
+              color: Theme.of(context).colorScheme.primary,
             ),
+            const SizedBox(height: 16),
+            const Text(
+              'Nenhuma caminhada cadastrada.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 19,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Toque no botão + para escolher um destino e criar sua primeira caminhada.',
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -19,18 +19,19 @@ class CaminhadaStorage {
     try {
       final texto = await arquivo.readAsString();
       final lista = jsonDecode(texto) as List;
+
       return lista
-          .map((item) => Caminhada.fromJson(item))
+          .map((item) => Caminhada.fromJson(Map<String, dynamic>.from(item)))
           .toList();
     } catch (_) {
       return [];
     }
   }
 
-  Future<void> salvar(List<Caminhada> historico) async {
+  Future<void> salvar(List<Caminhada> caminhadas) async {
     final arquivo = await _arquivo();
     final texto = jsonEncode(
-      historico.map((caminhada) => caminhada.toJson()).toList(),
+      caminhadas.map((caminhada) => caminhada.toJson()).toList(),
     );
     await arquivo.writeAsString(texto);
   }

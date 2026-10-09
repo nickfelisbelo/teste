@@ -24,6 +24,7 @@ class FotoService {
 
     final nome = '${DateTime.now().millisecondsSinceEpoch}.jpg';
     final destino = File('${pasta.path}/$nome');
+
     await File(foto.path).copy(destino.path);
 
     return destino.path;
