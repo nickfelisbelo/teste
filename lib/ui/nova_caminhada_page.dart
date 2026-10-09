@@ -105,26 +105,24 @@ class _NovaCaminhadaPageState extends State<NovaCaminhadaPage> {
     });
 
     try {
-      final rota = await _rotaService.calcularRota(
+      final resultado = await _rotaService.calcularRota(
         origem: origem,
         destino: destino,
       );
 
       if (!mounted) return;
 
-      final distancia = _rotaService.calcularDistancia(rota);
-      final tempo = _calcularTempo(distancia);
-      final calorias = _calcularCalorias(distancia);
+      final calorias = _calcularCalorias(resultado.distanciaKm);
 
       setState(() {
-        _rota = rota;
-        _distanciaKm = distancia;
-        _tempoMinutos = tempo;
+        _rota = resultado.pontos;
+        _distanciaKm = resultado.distanciaKm;
+        _tempoMinutos = resultado.tempoMinutos;
         _calorias = calorias;
         _calculandoRota = false;
       });
 
-      await _mostrarRotaCompleta(rota);
+      await _mostrarRotaCompleta(resultado.pontos);
     } catch (e) {
       if (!mounted) return;
 

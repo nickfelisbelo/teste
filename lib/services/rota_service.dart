@@ -1,144 +1,207 @@
 import 'dart:convert';
-import 'dart:math' as math;
-import 'package:http/http.dart' as http;
+
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:http/http.dart' as http;
+
+class RotaCalculada {
+  final List<LatLng> pontos;
+  final double distanciaKm;
+  final int tempoMinutos;
+
+  const RotaCalculada({
+    required this.pontos,
+    required this.distanciaKm,
+    required this.tempoMinutos,
+  });
+}
 
 class RotaService {
   static const String _apiKey = String.fromEnvironment(
     'GOOGLE_MAPS_API_KEY',
   );
 
-  Future<List<LatLng>> calcularRota({
+  static const String _endpoint =
+      'https://routes.googleapis.com/directions/v2:computeRoutes';
+
+  Future<RotaCalculada> calcularRota({
     required LatLng origem,
     required LatLng destino,
   }) async {
     if (_apiKey.isEmpty) {
-      return [origem, destino];
-    }
-
-    final url = Uri.parse(
-      'https://maps.googleapis.com/maps/api/directions/json'
-      '?origin=${origem.latitude},${origem.longitude}'
-      '&destination=${destino.latitude},${destino.longitude}'
-      '&mode=walking'
-      '&key=$_apiKey',
-    );
-
-    final resposta = await http.get(url);
-
-    if (resposta.statusCode != 200) {
-      throw Exception('Não foi possível calcular a rota.');
-    }
-
-    final dados = jsonDecode(resposta.body) as Map<String, dynamic>;
-
-    if (dados['status'] != 'OK') {
       throw Exception(
-        dados['error_message']?.toString() ??
-            'Não foi possível encontrar uma rota.',
+        'A chave da Routes API não foi configurada. Execute o app com '
+        '--dart-define=GOOGLE_MAPS_API_KEY=SUA_CHAVE.',
       );
     }
 
-    final rotas = dados['routes'] as List;
+    final resposta = await http.post(
+      Uri.parse(_endpoint),
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': _apiKey,
+        'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,'
+            'routes.polyline.encodedPolyline',
+      },
+      body: jsonEncode({
+        'origin': {
+          'location': {
+            'latLng': {
+              'latitude': origem.latitude,
+              'longitude': origem.longitude,
+            },
+          },
+        },
+        'destination': {
+          'location': {
+            'latLng': {
+              'latitude': destino.latitude,
+              'longitude': destino.longitude,
+            },
+          },
+        },
+        'travelMode': 'WALK',
+        'languageCode': 'pt-BR',
+        'units': 'METRIC',
+        'computeAlternativeRoutes': false,
+      }),
+    );
 
-    if (rotas.isEmpty) {
-      throw Exception('Nenhuma rota encontrada.');
+    final dynamic corpo;
+
+    try {
+      corpo = jsonDecode(resposta.body);
+    } catch (_) {
+      throw Exception('O Google retornou uma resposta inválida.');
     }
 
-    final pontos = rotas.first['overview_polyline']['points'] as String;
-    return _decodificarPolyline(pontos);
+    if (resposta.statusCode < 200 || resposta.statusCode >= 300) {
+      final mensagem = corpo is Map
+          ? (corpo['error'] is Map
+              ? corpo['error']['message']?.toString()
+              : null)
+          : null;
+
+      throw Exception(
+        mensagem ?? 'Erro HTTP ${resposta.statusCode} ao calcular a rota.',
+      );
+    }
+
+    if (corpo is! Map || corpo['routes'] is! List) {
+      throw Exception(
+        'A resposta do Google não contém rotas.',
+      );
+    }
+
+    final rotas = corpo['routes'] as List;
+
+    if (rotas.isEmpty) {
+      throw Exception(
+        'Nenhuma rota a pé foi encontrada entre esses pontos.',
+      );
+    }
+
+    final rota = rotas.first as Map;
+
+    final encoded = rota['polyline']?['encodedPolyline'] as String?;
+
+    final distanciaMetros = rota['distanceMeters'] as num?;
+
+    final duracao = rota['duration']?.toString();
+
+    if (encoded == null || encoded.isEmpty || distanciaMetros == null) {
+      throw Exception(
+        'O Google não retornou os dados completos da rota.',
+      );
+    }
+
+    final pontos = _decodificarPolyline(encoded);
+
+    if (pontos.length < 2) {
+      throw Exception(
+        'A rota retornada não possui pontos suficientes.',
+      );
+    }
+
+    final segundos = _lerDuracaoSegundos(duracao);
+
+    return RotaCalculada(
+      pontos: pontos,
+      distanciaKm: distanciaMetros / 1000,
+      tempoMinutos: (segundos / 60).ceil(),
+    );
+  }
+
+  int _lerDuracaoSegundos(String? duracao) {
+    if (duracao == null) {
+      throw Exception(
+        'O Google não retornou a duração estimada da rota.',
+      );
+    }
+
+    final valor = RegExp(
+      r'^(\d+(?:\.\d+)?)s$',
+    ).firstMatch(duracao);
+
+    if (valor == null) {
+      throw Exception(
+        'Formato de duração da rota não reconhecido.',
+      );
+    }
+
+    return double.parse(valor.group(1)!).ceil();
   }
 
   List<LatLng> _decodificarPolyline(String encoded) {
-    final resultado = <LatLng>[];
+    final pontos = <LatLng>[];
+
     var index = 0;
     var latitude = 0;
     var longitude = 0;
 
     while (index < encoded.length) {
       var shift = 0;
-      var result = 0;
+      var resultado = 0;
+      int byte;
 
-      while (true) {
-        final byte = encoded.codeUnitAt(index++) - 63;
-        result |= (byte & 0x1f) << shift;
-        shift += 5;
-
-        if (byte < 0x20) {
-          break;
+      do {
+        if (index >= encoded.length) {
+          throw Exception(
+            'Polyline da rota está incompleta.',
+          );
         }
-      }
 
-      final deltaLatitude = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+        byte = encoded.codeUnitAt(index++) - 63;
+        resultado |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
 
-      latitude += deltaLatitude;
+      latitude += (resultado & 1) != 0 ? ~(resultado >> 1) : (resultado >> 1);
+
       shift = 0;
-      result = 0;
+      resultado = 0;
 
-      while (true) {
-        final byte = encoded.codeUnitAt(index++) - 63;
-        result |= (byte & 0x1f) << shift;
-        shift += 5;
-
-        if (byte < 0x20) {
-          break;
+      do {
+        if (index >= encoded.length) {
+          throw Exception(
+            'Polyline da rota está incompleta.',
+          );
         }
-      }
 
-      final deltaLongitude = (result & 1) != 0 ? ~(result >> 1) : (result >> 1);
+        byte = encoded.codeUnitAt(index++) - 63;
+        resultado |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
 
-      longitude += deltaLongitude;
+      longitude += (resultado & 1) != 0 ? ~(resultado >> 1) : (resultado >> 1);
 
-      resultado.add(
+      pontos.add(
         LatLng(
-          latitude / 100000.0,
-          longitude / 100000.0,
+          latitude / 1e5,
+          longitude / 1e5,
         ),
       );
     }
 
-    return resultado;
+    return pontos;
   }
-
-  double calcularDistancia(List<LatLng> pontos) {
-    if (pontos.length < 2) return 0;
-
-    double metros = 0;
-
-    for (var i = 1; i < pontos.length; i++) {
-      metros += _distanciaEntre(
-        pontos[i - 1],
-        pontos[i],
-      );
-    }
-
-    return metros / 1000;
-  }
-
-  double _distanciaEntre(LatLng a, LatLng b) {
-    const raioTerra = 6371000.0;
-    final latitude1 = a.latitude * 3.141592653589793 / 180;
-    final latitude2 = b.latitude * 3.141592653589793 / 180;
-    final deltaLatitude = (b.latitude - a.latitude) * 3.141592653589793 / 180;
-    final deltaLongitude =
-        (b.longitude - a.longitude) * 3.141592653589793 / 180;
-
-    final senoLatitude = _sin(deltaLatitude / 2);
-    final senoLongitude = _sin(deltaLongitude / 2);
-
-    final h = senoLatitude * senoLatitude +
-        _cos(latitude1) * _cos(latitude2) * senoLongitude * senoLongitude;
-
-    final c = 2 * _atan2(_sqrt(h), _sqrt(1 - h));
-
-    return raioTerra * c;
-  }
-
-  double _sin(double value) => math.sin(value);
-
-  double _cos(double value) => math.cos(value);
-
-  double _sqrt(double value) => math.sqrt(value);
-
-  double _atan2(double y, double x) => math.atan2(y, x);
 }
